@@ -161,15 +161,6 @@ cd4_reg <- cd4|>
   rename(gender = sex)
 ```
 
-```{r back up}
-age = case_when(age>=10&age<20 ~ "10",
-                    age>=20&age<30 ~ "20",
-                    age>=30&age<40 ~ "30",
-                    age>=40&age<50 ~ "40",
-                    age>=50&age<60 ~ "50",
-                    age>=60&age<70 ~ "60",
-                    age>=70 ~ "70")
-```
 
 
 
@@ -187,17 +178,6 @@ summary(LMM.M.fit1)
 ```
 
 
-#### selected model with random intercept
-```{r}
-LMM.M.fit.s <- lme(logcd4~treatment*week+age+gender-treatment,
-                random = reStruct(~1|id),
-                data = cd4_reg,
-                method = "ML")
-
-summary(LMM.M.fit.s)
-```
-
-
 #### selected model with independent random slope and random intercept
 ```{r}
 LMM.M.fit2 <- lme(logcd4~treatment*week+age+gender*week,
@@ -208,23 +188,6 @@ LMM.M.fit2 <- lme(logcd4~treatment*week+age+gender*week,
 summary(LMM.M.fit2)
 ```
 
-```{r random slope& intercept}
-coe <- test$coefficients$random$id
-
-coe <- as.data.frame(coe)
-
-coe_plot <- coe |>
-  mutate(
-    treatment2 = ifelse(treatment2==0,NA,treatment2),
-    treatment3 = ifelse(treatment3==0,NA,treatment3),
-    treatment4 = ifelse(treatment4==0,NA,treatment4)
-  )
-
-coe_plot|>
-  filter(!is.na(treatment4))|>
-  ggplot(aes(y = treatment4, x = `(Intercept)`))+
-  geom_point()
-```
 
 * Difference in standard deviation of the random effect of each treatment group, suggest heteroskedasticity
 
@@ -308,51 +271,6 @@ LMM.result|>
 ```
 
 
-#### Checking the best fit
-
-```{r}
-cd4_reg |>
-  mutate(
-    epsHat <- resid(LMM.M.fit1,type = "normalized")
-  ) |>
-  ggplot(aes(x = treatment, y = epsHat))+
-  geom_boxplot()
-
-LRT <- -2*(logLik(LMM.M.fit1)-logLik(LMM.M.fit2))
-
-gammaHat <- ranef(LMM.M.fit2)[,1]
-```
-
-
-
-```{r}
-simulate.res <- simulate.lme(LMM.M.fit1,
-                             nsim = 1000,
-                             seed = 0,
-                             m2 = LMM.M.fit2)
-
-# compute LRT statistics quantile
-LRT_test <- -2*(logLik(LMM.M.fit1)-logLik(LMM.M.fit2))|>as.numeric()
-
-# compute 95 percentile for simulated mix chi-square distribution
-LRT = -2*(simulate.res[["null"]][["REML"]]-simulate.res[["alt"]][["REML"]])
-LRT <- data.frame(LRT)
-quantile_95 <- quantile(LRT$logLik,0.95)
-
-## ???how to make this plot???
-ggplot(data = LRT,aes(x = logLik) )+
-  geom_density()+
-  xlim(0,25)+
-  geom_vline(xintercept = quantile_95, linetype = "dashed") +
-  annotate("text", x = quantile_95, y = 0, label = "95% Quantile", vjust = 1)+
-  labs(
-    y = "density",
-    x = "LRT statistics",
-    title = "simulated chi-square distribution"
-  )
-
-```
-
 ## GEE
 
 
@@ -416,7 +334,7 @@ i <- iiw.weights(Surv(week.lag,week,event)~ gender +
 tbl_regression(i$m)
 ```
 
-#### fit iiw GEE
+#### Fit iiw GEE
 
 ```{r}
 iiwgee <- iiwgee(logcd4 ~ treatment*week+age+gender*week,
