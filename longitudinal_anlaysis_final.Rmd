@@ -1,0 +1,430 @@
+---
+title: "P8157_final project"
+author: "Hongzhu Ren"
+date: "2023-12-10"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(haven)
+library(table1)
+library(nlme)
+library(geepack)
+library(IrregLong)
+library(survival)
+library(gtsummary)
+```
+
+
+```{r}
+cd4 <- read_dta("./data/cd4.dta")|>
+  rename(treatment = group)
+```
+
+## EDA anlaysis
+
+### Table1
+```{r}
+follow_up <- cd4|>
+  group_by(id)|>
+  summarise(
+    follow_up = n()
+  )
+
+cd4_tidy <- cd4|>
+  mutate(
+    treatment = factor(treatment,
+                       levels=c(1:4),
+                       labels = c("alternating 400mg didanosine monthly",
+                                  "+ 2.25mg zalcitabine", 
+                                  "+ 400mg didanosine", 
+                                  "+ 400mg didanosine & 400mg nevirapine")),
+    sex = case_match(
+      sex,
+      1 ~ "Male",
+      0 ~ "Female"
+    )
+  )|>
+  rename(gender = sex)|>
+  left_join(follow_up)
+
+cd4_bl <- cd4_tidy|>
+  filter(week==0)
+```
+
+
+```{r}
+## identify subjects without baseline measurement
+id_bl <- cd4_bl|>
+  pull(id)|>
+  unique()
+
+id <- cd4|>pull(id)|>unique()
+
+weird <- cd4|>filter(id %in% setdiff(id,id_bl))
+```
+
+
+```{r}
+label(cd4_bl$treatment) <- "Treatment"
+label(cd4_bl$age) <- "Age"
+label(cd4_bl$gender) <- "Gender"
+label(cd4_bl$follow_up) <- "Follow-up times"
+label(cd4_bl$logcd4) <- "Log(CD4 counts+1)"
+
+caption  <- "Baseline stats"
+footnote <- "Observations within 40 weeks"
+
+table1(~age+gender+follow_up+logcd4 | treatment, data = cd4_bl,caption = caption, footnote = footnote)
+```
+
+* subjects without baseline measurement
+* skewed in gender
+
+## spaghetti plot
+
+#### Treatment and gender
+```{r}
+cd4_tidy |>
+  mutate(
+    id = factor(id)
+  )|>
+  ggplot(aes(x = week, y = logcd4, color = id))+
+  geom_line()+
+  geom_smooth(color = "red")+
+  facet_grid(cols = vars(treatment),rows = vars(gender))+
+  theme(legend.position = "none")
+
+```
+
+From group 1 to 4, the overall decline in log(cd4 count+1) decrease. 
+
+Group 4 of males even have an increase trend in log(cd4 count+1)
+
+
+#### Treatment and age
+```{r}
+cd4_tidy |>
+  mutate(
+    id = factor(id),
+    age = case_when(age>=10&age<30 ~ "10~30",
+                    age>=30&age<50 ~ "30~50",
+                    age>=50 ~ ">50"
+                    ),
+    age = factor(age,level = c("10~30","30~50",">50"))
+  )|>
+  ggplot(aes(x = week, y = logcd4, color = id))+
+  geom_line()+
+  geom_smooth(color = "red")+
+  facet_grid(cols = vars(treatment),rows = vars(age))+
+  theme(legend.position = "none")
+```
+
+* Lower age has lower reduce rate.
+* For all treatment group, there is average wave trend in age 10-30.
+* In general, cd4 count decrease eventually for treatment1 and treatment2.
+* Effect of treatment 3 varied in different age group.
+* Treatment4 has an average control of decrease of cd4 for all age group
+
+
+Little difference in average log(cd4+1) in each treatment group
+
+
+```{r}
+hist(cd4_tidy$age)
+```
+
+
+```{r}
+cd4_reg <- cd4|>
+  mutate(
+    treatment = factor(treatment,
+                       levels=c(1:4),
+                       labels = c("1",
+                                  "2", 
+                                  "3", 
+                                  "4")),
+    sex = case_match(
+      sex,
+      1 ~ "Male",
+      0 ~ "Female"
+    ),
+    age = case_when(age>=10&age<20 ~ "10",
+                    age>=20&age<30 ~ "20",
+                    age>=30&age<40 ~ "30",
+                    age>=40&age<50 ~ "40",
+                    age>=50&age<60 ~ "50",
+                    age>=60 ~ "60"),
+    age = as.numeric(age)
+  )|>
+  rename(gender = sex)
+```
+
+```{r back up}
+age = case_when(age>=10&age<20 ~ "10",
+                    age>=20&age<30 ~ "20",
+                    age>=30&age<40 ~ "30",
+                    age>=40&age<50 ~ "40",
+                    age>=50&age<60 ~ "50",
+                    age>=60&age<70 ~ "60",
+                    age>=70 ~ "70")
+```
+
+
+
+
+## LMM model
+
+#### naive model with random intercept
+```{r}
+LMM.M.fit1 <- lme(logcd4~treatment*week+age+gender*week,
+                random = reStruct(~1|id),
+                data = cd4_reg,
+                method = "ML")
+
+summary(LMM.M.fit1)
+```
+
+
+#### selected model with random intercept
+```{r}
+LMM.M.fit.s <- lme(logcd4~treatment*week+age+gender-treatment,
+                random = reStruct(~1|id),
+                data = cd4_reg,
+                method = "ML")
+
+summary(LMM.M.fit.s)
+```
+
+
+#### selected model with independent random slope and random intercept
+```{r}
+LMM.M.fit2 <- lme(logcd4~treatment*week+age+gender*week,
+                random = reStruct(~treatment|id, pdClass = "pdDiag"),
+                data = cd4_reg,
+                method = "ML")
+ 
+summary(LMM.M.fit2)
+```
+
+```{r random slope& intercept}
+coe <- test$coefficients$random$id
+
+coe <- as.data.frame(coe)
+
+coe_plot <- coe |>
+  mutate(
+    treatment2 = ifelse(treatment2==0,NA,treatment2),
+    treatment3 = ifelse(treatment3==0,NA,treatment3),
+    treatment4 = ifelse(treatment4==0,NA,treatment4)
+  )
+
+coe_plot|>
+  filter(!is.na(treatment4))|>
+  ggplot(aes(y = treatment4, x = `(Intercept)`))+
+  geom_point()
+```
+
+* Difference in standard deviation of the random effect of each treatment group, suggest heteroskedasticity
+
+#### selected model with correlated random slope and random intercept
+```{r}
+LMM.M.fit3 <- lme(logcd4~treatment*week+age+gender*week,
+                random = reStruct(~treatment|id),
+                data = cd4_reg,
+                method = "ML")
+
+summary(LMM.M.fit3)
+```
+
+
+#### selected model random intercept + heteroskedasticity across treatment
+```{r}
+LMM.M.fit4 <- lme(logcd4~treatment*week+age+gender*week,
+                random = reStruct(~1|id),
+                weights = varIdent(form = ~1| treatment),
+                data = cd4_reg,
+                method = "ML")
+
+test <- summary(LMM.M.fit4)
+test$tTable|>
+  round(4)|>
+  knitr::kable()
+```
+
+
+#### selected model random intercept + heteroskedasticity across age
+```{r}
+LMM.M.fit5 <- lme(logcd4~treatment*week+age+gender*week,
+                random = reStruct(~1|id),
+                weights = varIdent(form = ~1| age),
+                data = cd4_reg,
+                method = "ML")
+
+summary(LMM.M.fit5)
+```
+
+
+#### selected model random intercept + heteroskedasticity across gender
+```{r}
+LMM.M.fit6 <- lme(logcd4~treatment*week+age+gender*week,
+                random = reStruct(~1|id),
+                weights = varIdent(form = ~1| gender),
+                data = cd4_reg,
+                method = "ML")
+
+summary(LMM.M.fit6)
+```
+
+
+#### selected model random intercept and auto-related
+```{r}
+LMM.M.fit7 <- lme(logcd4~treatment*week+age+gender*week,
+                random = reStruct(~1|id),
+                correlation = corAR1(form = ~week|id),
+                data = cd4_reg,
+                method = "ML")
+
+summary(LMM.M.fit7)
+```
+
+
+#### compare models
+
+```{r}
+LMM.result <- tibble(
+  name = c("LMM.M.fit1","LMM.M.fit2","LMM.M.fit3","LMM.M.fit4","LMM.M.fit5","LMM.M.fit6","LMM.M.fit7"),
+  model = list(LMM.M.fit1,LMM.M.fit2,LMM.M.fit3,LMM.M.fit4,LMM.M.fit5,LMM.M.fit6,LMM.M.fit7),
+  AIC = map(model, AIC)
+)
+
+LMM.result|>
+  select(-model)|>
+  unnest(name,AIC)|>
+  knitr::kable()
+
+
+```
+
+
+#### Checking the best fit
+
+```{r}
+cd4_reg |>
+  mutate(
+    epsHat <- resid(LMM.M.fit1,type = "normalized")
+  ) |>
+  ggplot(aes(x = treatment, y = epsHat))+
+  geom_boxplot()
+
+LRT <- -2*(logLik(LMM.M.fit1)-logLik(LMM.M.fit2))
+
+gammaHat <- ranef(LMM.M.fit2)[,1]
+```
+
+
+
+```{r}
+simulate.res <- simulate.lme(LMM.M.fit1,
+                             nsim = 1000,
+                             seed = 0,
+                             m2 = LMM.M.fit2)
+
+# compute LRT statistics quantile
+LRT_test <- -2*(logLik(LMM.M.fit1)-logLik(LMM.M.fit2))|>as.numeric()
+
+# compute 95 percentile for simulated mix chi-square distribution
+LRT = -2*(simulate.res[["null"]][["REML"]]-simulate.res[["alt"]][["REML"]])
+LRT <- data.frame(LRT)
+quantile_95 <- quantile(LRT$logLik,0.95)
+
+## ???how to make this plot???
+ggplot(data = LRT,aes(x = logLik) )+
+  geom_density()+
+  xlim(0,25)+
+  geom_vline(xintercept = quantile_95, linetype = "dashed") +
+  annotate("text", x = quantile_95, y = 0, label = "95% Quantile", vjust = 1)+
+  labs(
+    y = "density",
+    x = "LRT statistics",
+    title = "simulated chi-square distribution"
+  )
+
+```
+
+## GEE
+
+
+```{r}
+GEE.fit1 <- geeglm(logcd4~treatment*week+age++gender*week,
+                   id = id,
+                   data = cd4_reg,
+                   corstr = "independence"
+                   )
+
+summary(GEE.fit1)
+```
+
+
+```{r}
+GEE.fit2 <- geeglm(logcd4~treatment*week+age++gender*week,
+                   id = id,
+                   data = cd4_reg,
+                   corstr = "exchangeable"
+                   )
+
+summary(GEE.fit2)
+```
+
+
+```{r}
+GEE.fit3 <- geeglm(logcd4~treatment*week+age+gender*week,
+                   id = id,
+                   data = cd4_reg,
+                   corstr = "ar1"
+                   )
+
+summary(GEE.fit3)
+```
+
+
+## Irregular observations
+
+```{r}
+cd4_iiw <- cd4_reg|>
+  mutate(
+    event = 1-as.numeric(is.na(logcd4))
+  )|>
+  lagfn(c("week","logcd4"), "id",lagfirst = c(0,0))
+
+```
+
+```{r}
+hist(cd4$logcd4)
+```
+
+#### Calculate inverse intensity weight
+
+```{r}
+i <- iiw.weights(Surv(week.lag,week,event)~ gender +
+                   logcd4.lag +
+                   cluster(id),id="id",time="week",event="event",data=cd4_iiw,
+                 invariant=c("id","age","gender","treatment"),lagvars=c("week","logcd4"),maxfu=40,
+                 lagfirst=c(0,0),first=FALSE)
+
+tbl_regression(i$m)
+```
+
+#### fit iiw GEE
+
+```{r}
+iiwgee <- iiwgee(logcd4 ~ treatment*week+age+gender*week,
+                 Surv(week.lag,week,event)~gender + logcd4.lag + cluster(id),
+                 formulanull=NULL,id="id",time="week",event="event",data=cd4_iiw,
+                 invariant=c("id","age","gender","treatment"),lagvars=c("week","logcd4"),maxfu=40,
+                 lagfirst=c(0,0),first=FALSE)
+
+summary(iiwgee$geefit)
+```
+
